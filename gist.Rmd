@@ -1,0 +1,218 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(chromote)
+library(htmltools)
+library(magick)
+library(purrr)
+library(stringi)
+library(tidyverse)
+```
+
+```{r}
+write_text_html <- function(
+  text, 
+  file,
+  font_size = 12, 
+  font_family = "Courier New",
+  dimensions = c(992, 744),
+  width = dimensions[1], 
+  height = dimensions[2], 
+  border = c(0, 0),
+  border_width = border[1],
+  border_height = border[2]
+) {
+  css <- sprintf(
+    paste(
+      c(
+        "",
+        ".content {",
+        "  display: flex;",
+        "  justify-content: center;",
+        "  align-items: center;",
+        "  width: %spx;",
+        "  height: %spx;",
+        "  font-family: '%s';",
+        "  font-size: %spx;",
+        "  padding-left: %spx;",
+        "  padding-bottom: %spx;",
+        "  padding-right: %spx;",
+        "  padding-top: %spx;",
+        "  overflow: hidden;",
+        "}",
+        ""
+      ),
+      collapse = "\n"
+    ), 
+    width - 2 * border_width, 
+    height - 2 * border_height, 
+    font_family, 
+    font_size,
+    border_width,
+    border_height,
+    border_width,
+    border_height
+  )
+  
+  htmltools::tagList(
+    htmltools::tags$style(css),
+    htmltools::tags$body(
+      htmltools::tags$div(id = "content", class = "content", text)
+    )
+  ) %>% 
+    htmltools::html_print()
+}
+
+path_to_uri <- function(path) {
+  path %>% 
+    # get forward slash on windows
+    normalizePath(winslash = "/") %>% 
+    # replace drive:/ with drive:// so C:/ becomes C://
+    gsub(x = ., pattern = ":/", replacement = "://") %>%
+    # appends file:/// to make valid uri
+    paste0("file:///", .)
+}
+
+html_has_overflow <- function(html) {
+  b <- chromote::ChromoteSession$new() # new session or tab
+  
+  html %>% 
+    path_to_uri() %>% 
+    b$Page$navigate()
+  
+  Sys.sleep(3)
+  
+  x <- b$Runtime$evaluate(paste0(
+    "var obj = document.getElementById('content');",
+    "obj.scrollHeight > obj.offsetHeight"
+  ))
+  
+  Sys.sleep(3)
+  
+  b$close() # close tab
+  
+  return(x$result$value)
+}
+
+write_html_png <- function(
+  html, 
+  png, 
+  dimensions = c(992, 744),
+  width = dimensions[1], 
+  height = dimensions[2]
+) {
+  b <- chromote::ChromoteSession$new() # new session or tab
+  
+  html %>% 
+    path_to_uri() %>% 
+    b$Page$navigate()
+  
+  Sys.sleep(3)
+  
+  b$screenshot(png, selector = ".content")
+  
+  Sys.sleep(3)
+  
+  b$close() # close tab
+  
+  magick::image_blank(width, height, color = "white") %>% 
+    magick::image_composite(
+      magick::image_read(png), 
+      gravity = "center"
+    ) %>% 
+    magick::image_write(png)
+}
+
+optimal_font_size <- function(
+  text,
+  font_size_range,
+  font_size_min = min(font_size_range),
+  font_size_max = max(font_size_range),
+  font_family = "Courier New",
+  border = c(0, 0),
+  border_width = border[1],
+  border_height = border[2],
+  target_dimensions = c(992, 744),
+  target_width = target_dimensions[1],
+  target_height = target_dimensions[2]
+) {
+  ofs <- purrr::map_dfr(
+    font_size_min:font_size_max, 
+    ~ {
+      has_overflow <- write_text_html(
+        text = text,
+        file = tempfile(flieext = ".html"),
+        font_size = ., 
+        font_family = font_family,
+        dimensions = c(target_width, target_height),
+        border = c(border_width, border_height)
+      ) %>% 
+        html_has_overflow()
+      
+      dplyr::tibble(font_size = ., has_overflow)
+    }
+  ) %>% 
+    dplyr::filter(!has_overflow) %>% 
+    dplyr::arrange(dplyr::desc(font_size)) %>% 
+    dplyr::slice(1) %>% 
+    dplyr::pull(font_size)
+  
+  if(length(ofs) != 1)
+    stop("Optimal font size unidentified.")
+  else
+    ofs
+}
+```
+
+```{r}
+set.seed(42)
+
+tbl <- dplyr::tibble(
+  sample = stringi::stri_rand_lipsum(5),
+  id = 1:length(sample)
+)
+
+font_size_range <- c(10, 20)
+border <- c(100, 100)
+dimensions <- c(500, 500)
+
+longest_sample <- tbl %>% 
+  dplyr::mutate(nchar = nchar(sample)) %>% 
+  dplyr::arrange(dplyr::desc(nchar)) %>% 
+  dplyr::slice(1) %>% 
+  dplyr::select(id, sample)
+
+common_font_size <- optimal_font_size(
+  text = longest_sample$sample, 
+  font_size_range = font_size_range, 
+  font_family = "Courier New", 
+  border = border,
+  target_dimensions = dimensions
+)
+
+purrr::pwalk(tbl, function(sample, id) {
+  write_text_html(
+    text = sample,
+    file = tempfile(fileext = ".html"),
+    font_size = common_font_size, 
+    font_family = "Courier New",
+    dimensions = dimensions,
+    border = border
+  ) %>% 
+    write_html_png(
+      png = paste0(id, ".png"), 
+      dimensions = dimensions
+    )
+})
+```
+
+
+
+
+
+
